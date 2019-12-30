@@ -120,8 +120,7 @@ func handleLine(line string, configData map[string]map[string]*template.Template
 				}
 				insert.Rows.(sqlparser.Values)[i][j] = &sqlparser.SQLVal{Type: expr.Type, Val: buf.Bytes()}
 			default:
-				msg, _ := fmt.Printf("invalid value type: %v", sqlparser.String(expr))
-				panic(msg)
+				log.Fatalf("invalid value type: %v", sqlparser.String(expr))
 			}
 		}
 	}
