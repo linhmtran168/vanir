@@ -1,7 +1,7 @@
 package main
 
 import (
-	"app/bcrypt"
+	"golang.org/x/crypto/bcrypt"
 	"bufio"
 	"bytes"
 	"fmt"
@@ -20,13 +20,10 @@ var commit string
 var config = kingpin.Flag("config", "Path to YAML masking rule config file.").Required().Short('c').String()
 var cost = kingpin.Flag("cost", fmt.Sprintf("bcrypt cost. Min: %d, Max: %d", bcrypt.MinCost, bcrypt.MaxCost)).Default(fmt.Sprintf("%d", bcrypt.DefaultCost)).Int()
 
-type TemplateValue struct {
-	Raw  string
-	Salt string
-}
+type TemplateValue string
 
 func (v TemplateValue) Hashed() string {
-	result, err := bcrypt.Bcrypt([]byte(v.Raw), *cost, []byte(v.Salt))
+	result, err := bcrypt.GenerateFromPassword([]byte(v), *cost)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -34,20 +31,20 @@ func (v TemplateValue) Hashed() string {
 }
 
 func (v TemplateValue) First(n int) string {
-	rawRune := []rune(v.Raw)
+	rawRune := []rune(v)
 
 	if len(rawRune) < n {
-		return v.Raw
+		return string(v)
 	}
 
 	return string(rawRune[0:n])
 }
 
 func (v TemplateValue) Last(n int) string {
-	rawRune := []rune(v.Raw)
+	rawRune := []rune(v)
 
 	if len(rawRune) < n {
-		return v.Raw
+		return string(v)
 	}
 
 	return string(rawRune[len(rawRune)-n:])
@@ -81,7 +78,7 @@ func loadConfig(config string) map[string]map[string]*template.Template {
 	return templates
 }
 
-func handleLine(line string, configData map[string]map[string]*template.Template, salt []byte) string {
+func handleLine(line string, configData map[string]map[string]*template.Template) string {
 	if !strings.HasPrefix(line, "INSERT ") {
 		return line
 	}
@@ -94,7 +91,7 @@ func handleLine(line string, configData map[string]map[string]*template.Template
 	}
 
 	insert := tree.(*sqlparser.Insert)
-	tableName := string(insert.Table.Name)
+	tableName := string(insert.Table.Name.String())
 	fmt.Fprintf(os.Stderr, "Masking `%s`...\n", tableName)
 	_, present := configData[tableName]
 
@@ -104,30 +101,27 @@ func handleLine(line string, configData map[string]map[string]*template.Template
 
 	columnNames := make([]string, len(insert.Columns))
 	for i, column := range insert.Columns {
-		columnNames[i] = string(column.(*sqlparser.NonStarExpr).Expr.(*sqlparser.ColName).Name)
+		columnNames[i] = column.CompliantName();
 	}
 
 	for i, row := range insert.Rows.(sqlparser.Values) {
-		for j, col := range row.(sqlparser.ValTuple) {
+		for j, col := range row {
 			tmpl, present := configData[tableName][columnNames[j]]
 			if !present {
 				continue
 			}
 			var buf bytes.Buffer
 
-			switch val := col.(type) {
-			case sqlparser.StrVal:
-				err = tmpl.Execute(&buf, &TemplateValue{Raw: string(val), Salt: string(salt)})
+			switch expr := col.(type) {
+			case *sqlparser.SQLVal:
+				err = tmpl.Execute(&buf, TemplateValue(string(expr.Val)))
 				if err != nil {
 					log.Fatal(err)
 				}
-				insert.Rows.(sqlparser.Values)[i].(sqlparser.ValTuple)[j] = sqlparser.StrVal(buf.Bytes())
-			case sqlparser.NumVal:
-				err = tmpl.Execute(&buf, &TemplateValue{Raw: string(val), Salt: string(salt)})
-				if err != nil {
-					log.Fatal(err)
-				}
-				insert.Rows.(sqlparser.Values)[i].(sqlparser.ValTuple)[j] = sqlparser.NumVal(buf.Bytes())
+				insert.Rows.(sqlparser.Values)[i][j] = &sqlparser.SQLVal{Type: expr.Type, Val: buf.Bytes()}
+			default:
+				msg, _ := fmt.Printf("invalid value type: %v", sqlparser.String(expr))
+				panic(msg)
 			}
 		}
 	}
@@ -140,11 +134,6 @@ func main() {
 
 	configData := loadConfig(*config)
 
-	salt, err := bcrypt.GenerateSalt()
-	if err != nil {
-		log.Fatal(err)
-	}
-
 	scanner := bufio.NewScanner(os.Stdin)
 	// depends on max_allowed_packet
 	// maximum is 1G
@@ -154,10 +143,10 @@ func main() {
 	scanner.Buffer(buf, maxCapacity)
 
 	for scanner.Scan() {
-		fmt.Println(handleLine(strings.TrimSuffix(scanner.Text(), "\n"), configData, salt))
+		fmt.Println(handleLine(strings.TrimSuffix(scanner.Text(), "\n"), configData))
 	}
 
-	err = scanner.Err()
+	err := scanner.Err()
 	if err != nil {
 		log.Fatal(err)
 	}
