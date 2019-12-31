@@ -2,6 +2,8 @@ package main
 
 import (
 	"golang.org/x/crypto/bcrypt"
+	"time"
+	"sync"
 	"bufio"
 	"bytes"
 	"fmt"
@@ -13,6 +15,7 @@ import (
 	"os"
 	"strings"
 	"text/template"
+	"runtime"
 )
 
 var version string
@@ -79,24 +82,24 @@ func loadConfig(config string) map[string]map[string]*template.Template {
 }
 
 func handleLine(line string, configData map[string]map[string]*template.Template) string {
-	if !strings.HasPrefix(line, "INSERT ") {
-		return line
+	if !strings.HasPrefix(line, "INSERT ") && !strings.HasPrefix(line, "insert ") {
+		return ""
 	}
 
 	tree, err := sqlparser.Parse(strings.TrimSuffix(line, ";"))
 
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return line
+		log.Println(err)
+		return ""
 	}
 
 	insert := tree.(*sqlparser.Insert)
 	tableName := string(insert.Table.Name.String())
-	fmt.Fprintf(os.Stderr, "Masking `%s`...\n", tableName)
+	log.Printf("Masking `%s`...\n", tableName)
 	_, present := configData[tableName]
 
 	if !present {
-		return line
+		return ""
 	}
 
 	columnNames := make([]string, len(insert.Columns))
@@ -112,26 +115,29 @@ func handleLine(line string, configData map[string]map[string]*template.Template
 			}
 			var buf bytes.Buffer
 
-			switch expr := col.(type) {
-			case *sqlparser.SQLVal:
+			expr, ok := col.(*sqlparser.SQLVal) 
+
+			if (ok) {
 				err = tmpl.Execute(&buf, TemplateValue(string(expr.Val)))
 				if err != nil {
 					log.Fatal(err)
 				}
 				insert.Rows.(sqlparser.Values)[i][j] = &sqlparser.SQLVal{Type: expr.Type, Val: buf.Bytes()}
-			default:
-				log.Fatalf("invalid value type: %v", sqlparser.String(expr))
 			}
 		}
 	}
+
 	return fmt.Sprintf("%s;", sqlparser.String(insert))
 }
 
 func main() {
+	defer timeTrack(time.Now())
+
 	kingpin.Version(fmt.Sprintf("%s (%s)", version, commit))
 	kingpin.Parse()
 
 	configData := loadConfig(*config)
+	log.Println("Number of CPUs: ", runtime.NumCPU())
 
 	scanner := bufio.NewScanner(os.Stdin)
 	// depends on max_allowed_packet
@@ -141,12 +147,37 @@ func main() {
 	buf := make([]byte, maxCapacity)
 	scanner.Buffer(buf, maxCapacity)
 
+	var wg sync.WaitGroup
+	resChan := make(chan string)
+
 	for scanner.Scan() {
-		fmt.Println(handleLine(strings.TrimSuffix(scanner.Text(), "\n"), configData))
+		wg.Add(1)
+		rawStmt := strings.TrimSuffix(scanner.Text(), "\n")
+		go func() {
+			defer wg.Done()
+			resChan <- handleLine(rawStmt, configData)
+		}()
+	}
+
+	go func() {
+		wg.Wait()
+		close(resChan)
+	}()
+
+	for res := range resChan {
+		if (res != "") {
+			fmt.Println(res)
+		}
 	}
 
 	err := scanner.Err()
 	if err != nil {
 		log.Fatal(err)
 	}
+
+}
+
+func timeTrack(start time.Time) {
+	elapsed := time.Since(start)
+	log.Printf("Took %s", elapsed)
 }
