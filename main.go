@@ -1,21 +1,21 @@
 package main
 
 import (
-	"golang.org/x/crypto/bcrypt"
-	"time"
-	"sync"
 	"bufio"
 	"bytes"
 	"fmt"
 	"github.com/xwb1989/sqlparser"
+	"golang.org/x/crypto/bcrypt"
 	"gopkg.in/alecthomas/kingpin.v2"
 	"gopkg.in/yaml.v2"
 	"io/ioutil"
 	"log"
 	"os"
-	"strings"
-	"text/template"
 	"runtime"
+	"strings"
+	"sync"
+	"text/template"
+	"time"
 )
 
 var version string
@@ -83,12 +83,14 @@ func loadConfig(config string) map[string]map[string]*template.Template {
 
 func handleLine(line string, configData map[string]map[string]*template.Template) string {
 	if !strings.HasPrefix(line, "INSERT ") && !strings.HasPrefix(line, "insert ") {
+		// If not insert query, do nothing
 		return ""
 	}
 
 	tree, err := sqlparser.Parse(strings.TrimSuffix(line, ";"))
 
 	if err != nil {
+		// If parsing has error, do nothing
 		log.Println(err)
 		return ""
 	}
@@ -99,12 +101,13 @@ func handleLine(line string, configData map[string]map[string]*template.Template
 	_, present := configData[tableName]
 
 	if !present {
-		return ""
+		// If data from tables that do not need masking, return the original insert
+		return line
 	}
 
 	columnNames := make([]string, len(insert.Columns))
 	for i, column := range insert.Columns {
-		columnNames[i] = column.CompliantName();
+		columnNames[i] = column.CompliantName()
 	}
 
 	for i, row := range insert.Rows.(sqlparser.Values) {
@@ -115,9 +118,9 @@ func handleLine(line string, configData map[string]map[string]*template.Template
 			}
 			var buf bytes.Buffer
 
-			expr, ok := col.(*sqlparser.SQLVal) 
+			expr, ok := col.(*sqlparser.SQLVal)
 
-			if (ok) {
+			if ok {
 				err = tmpl.Execute(&buf, TemplateValue(string(expr.Val)))
 				if err != nil {
 					log.Fatal(err)
@@ -165,7 +168,7 @@ func main() {
 	}()
 
 	for res := range resChan {
-		if (res != "") {
+		if res != "" {
 			fmt.Println(res)
 		}
 	}
