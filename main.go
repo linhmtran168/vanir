@@ -4,10 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
-	"github.com/xwb1989/sqlparser"
-	"golang.org/x/crypto/bcrypt"
-	"gopkg.in/alecthomas/kingpin.v2"
-	"gopkg.in/yaml.v2"
 	"io/ioutil"
 	"log"
 	"os"
@@ -16,12 +12,35 @@ import (
 	"sync"
 	"text/template"
 	"time"
+
+	"github.com/xwb1989/sqlparser"
+	"golang.org/x/crypto/bcrypt"
+	"gopkg.in/alecthomas/kingpin.v2"
+	"gopkg.in/yaml.v2"
 )
 
 var version string
 var commit string
+var dataList DataList
 var config = kingpin.Flag("config", "Path to YAML masking rule config file.").Required().Short('c').String()
 var cost = kingpin.Flag("cost", fmt.Sprintf("bcrypt cost. Min: %d, Max: %d", bcrypt.MinCost, bcrypt.MaxCost)).Default(fmt.Sprintf("%d", bcrypt.DefaultCost)).Int()
+
+type DataList struct {
+	list map[string]string
+	mux  sync.Mutex
+}
+
+func (l *DataList) SetData(fileName string, data string) {
+	l.mux.Lock()
+	l.list[fileName] = data
+	l.mux.Unlock()
+}
+
+func (l *DataList) ReadData(fileName string) string {
+	l.mux.Lock()
+	defer l.mux.Unlock()
+	return l.list[fileName]
+}
 
 type TemplateValue string
 
@@ -51,6 +70,31 @@ func (v TemplateValue) Last(n int) string {
 	}
 
 	return string(rawRune[len(rawRune)-n:])
+}
+
+func (v TemplateValue) JSONFile(fileName string) (string, error) {
+	if v == "" {
+		return "", nil
+	}
+
+	data := dataList.ReadData(fileName)
+	if data == "" {
+		file, err := os.Open(fileName)
+		if err != nil {
+			return "", err
+		}
+		defer file.Close()
+
+		byteValue, err := ioutil.ReadAll(file)
+		if err != nil {
+			return "", err
+		}
+
+		data = string(byteValue)
+		dataList.SetData(fileName, data)
+	}
+
+	return data, nil
 }
 
 func loadConfig(config string) map[string]map[string]*template.Template {
@@ -119,7 +163,6 @@ func handleLine(line string, configData map[string]map[string]*template.Template
 			var buf bytes.Buffer
 
 			expr, ok := col.(*sqlparser.SQLVal)
-
 			if ok {
 				err = tmpl.Execute(&buf, TemplateValue(string(expr.Val)))
 				if err != nil {
@@ -142,6 +185,7 @@ func main() {
 	configData := loadConfig(*config)
 	log.Println("Number of CPUs: ", runtime.NumCPU())
 
+	dataList = DataList{list: make(map[string]string)}
 	scanner := bufio.NewScanner(os.Stdin)
 	// depends on max_allowed_packet
 	// maximum is 1G
@@ -177,7 +221,6 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-
 }
 
 func timeTrack(start time.Time) {
