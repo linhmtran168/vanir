@@ -72,7 +72,7 @@ func (v TemplateValue) Last(n int) string {
 	return string(rawRune[len(rawRune)-n:])
 }
 
-func (v TemplateValue) JSONFile(fileName string) (string, error) {
+func (v TemplateValue) DummyFile(fileName string) (string, error) {
 	if v == "" {
 		return "", nil
 	}
